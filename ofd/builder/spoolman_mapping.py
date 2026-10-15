@@ -18,6 +18,7 @@ directly unit-testable. See ``ofd/builder/exporters/spoolman_exporter.py`` for t
 writer.
 """
 
+import hashlib
 import re
 import statistics
 from collections.abc import Iterable
@@ -50,7 +51,8 @@ NAME_MAX_LENGTH = 64
 ELLIPSIS = "…"
 # Share of the budget reserved for the end of an elided name, so a trailing colour survives.
 _ELIDED_TAIL_BUDGET = NAME_MAX_LENGTH // 3
-_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*$")
+# "(refill)" is a marker build_filament adds, not a colour list: it is never dropped.
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\((?!refill\))[^()]*\)\s*$")
 
 _HEX_RE = re.compile(r"^[0-9a-f]{6}([0-9a-f]{2})?$")
 
@@ -244,25 +246,15 @@ def build_materials(filaments: Iterable[dict]) -> list[dict[str, Any]]:
     return materials
 
 
-def shorten_name(name: str) -> str:
-    """
-    Deterministically elide the middle of a name so it fits Spoolman's length limit.
-
-    Keeps whole words from the start and from the end, joined by one "… ", so a
-    trailing colour such as "Neon Yellow" survives. A name already within the limit
-    is returned unchanged, which makes the function idempotent. A single word longer
-    than its share is cut by characters.
-    """
-    if len(name) <= NAME_MAX_LENGTH:
-        return name
-
+def _elide(name: str, tail_budget: int) -> str:
+    """Keep whole words from the start and from the end (the end gets up to `tail_budget` characters), joined by one "… "."""
     words = name.split()
     tail_words: list[str] = []
-    while words and len(" ".join([words[-1], *tail_words])) <= _ELIDED_TAIL_BUDGET:
+    while words and len(" ".join([words[-1], *tail_words])) <= tail_budget:
         tail_words.insert(0, words.pop())
     tail = " ".join(tail_words)
     if not tail:
-        tail = words.pop()[-_ELIDED_TAIL_BUDGET:]
+        tail = words.pop()[-tail_budget:]  # one word too long on its own: cut it by characters
 
     separator = ELLIPSIS + " "
     head_budget = NAME_MAX_LENGTH - len(separator) - len(tail)
@@ -275,21 +267,63 @@ def shorten_name(name: str) -> str:
     return f"{head}{separator}{tail}"
 
 
+def shorten_name(name: str) -> str:
+    """
+    Deterministically elide the middle of a name so it fits Spoolman's length limit.
+
+    Keeps whole words from the start and from the end, joined by one "… ", so a trailing
+    colour such as "Neon Yellow" survives. A name already within the limit is returned
+    unchanged, which makes the function idempotent. A single word longer than its share
+    is cut by characters.
+    """
+    if len(name) <= NAME_MAX_LENGTH:
+        return name
+    return _elide(name, _ELIDED_TAIL_BUDGET)
+
+
+def _elision_candidates(name: str) -> list[str]:
+    """The plain elision first, then the same name with the cut shifted (smaller tail, then larger)."""
+    candidates = [shorten_name(name)]
+    shifted_budgets = [
+        *range(_ELIDED_TAIL_BUDGET - 1, 0, -1),
+        *range(_ELIDED_TAIL_BUDGET + 1, NAME_MAX_LENGTH // 2 + 1),
+    ]
+    for budget in shifted_budgets:
+        candidate = _elide(name, budget)
+        # A shifted cut must keep a head and a tail of whole words; only the plain elision may fall back to character cuts.
+        tail = candidate.rsplit(ELLIPSIS + " ", 1)[1]
+        whole_word_tail = name.endswith(" " + tail)
+        if (
+            len(candidate) <= NAME_MAX_LENGTH
+            and not candidate.startswith(ELLIPSIS)
+            and whole_word_tail
+            and candidate not in candidates
+        ):
+            candidates.append(candidate)
+    return candidates
+
+
+def _digest_tagged(name: str, length: int) -> str:
+    """Last resort when no cut is unique: a short digest of the full original name, still within the limit."""
+    tag = hashlib.sha256(name.encode()).hexdigest()[:length]
+    return f"{_elide(name, _ELIDED_TAIL_BUDGET)[: NAME_MAX_LENGTH - length - 1]}~{tag}"
+
+
 def shorten_long_names(records: list[dict[str, Any]]) -> list[tuple[str, str, str, str]]:
     """
     Bring every record's name within Spoolman's limit, in place, and report what changed.
 
-    Per over-long name: (a) drop a trailing parenthetical if the remainder fits and
-    does not collide with another record's name for the same (manufacturer, material,
-    weight, diameter); otherwise (b) elide the middle (:func:`shorten_name`). Collisions
-    are judged against every other record's name and every other candidate, so the
-    result does not depend on record order.
+    Per over-long name: (a) drop a trailing parenthetical (never the "(refill)" marker) if the remainder
+    fits and does not collide with another record's name for the same (manufacturer, material, weight,
+    diameter); otherwise (b) elide the middle (:func:`shorten_name`). (c) If an elided name still collides
+    with another record's final name, shift the cut (:func:`_elision_candidates`) and as a last resort tag
+    it with a digest, so names stay unique. Collisions are judged against every other record, and elided
+    records are resolved in sorted order, so the result does not depend on record order.
 
-    Returns ``(id, original, shortened, step)`` tuples, step being "parenthetical" or
-    "elided".
+    Returns ``(id, original, shortened, step)`` tuples, step being "parenthetical" or "elided".
     """
 
-    def key(record: dict[str, Any], name: str) -> tuple:
+    def key(record: dict[str, Any], name: str) -> tuple[Any, ...]:
         return (
             record["manufacturer"],
             record["material"],
@@ -301,7 +335,7 @@ def shorten_long_names(records: list[dict[str, Any]]) -> list[tuple[str, str, st
     def stripped(name: str) -> str:
         return _TRAILING_PARENTHETICAL_RE.sub("", name)
 
-    in_use: dict[tuple, int] = {}
+    in_use: dict[tuple[Any, ...], int] = {}
     for record in records:
         name = record["name"]
         candidate = stripped(name) if len(name) > NAME_MAX_LENGTH else name
@@ -309,10 +343,13 @@ def shorten_long_names(records: list[dict[str, Any]]) -> list[tuple[str, str, st
             continue
         in_use[key(record, candidate)] = in_use.get(key(record, candidate), 0) + 1
 
-    changes = []
+    changes: list[tuple[str, str, str, str]] = []
+    to_elide: list[dict[str, Any]] = []
+    owners: dict[tuple[Any, ...], str] = {}  # final name -> original name that owns it
     for record in records:
         original = record["name"]
         if len(original) <= NAME_MAX_LENGTH:
+            owners[key(record, original)] = original
             continue
         candidate = stripped(original)
         if (
@@ -321,8 +358,35 @@ def shorten_long_names(records: list[dict[str, Any]]) -> list[tuple[str, str, st
             and len(candidate) <= NAME_MAX_LENGTH
             and in_use[key(record, candidate)] == 1
         ):
-            record["name"], step = candidate, "parenthetical"
+            record["name"] = candidate
+            owners[key(record, candidate)] = original
+            changes.append((record["id"], original, candidate, "parenthetical"))
         else:
-            record["name"], step = shorten_name(original), "elided"
-        changes.append((record["id"], original, record["name"], step))
+            to_elide.append(record)
+
+    def elision_order(record: dict[str, Any]) -> tuple:
+        return (
+            record["manufacturer"],
+            record["material"],
+            record["weight"],
+            record["diameter"],
+            record["name"],
+            record["id"],
+        )
+
+    for record in sorted(to_elide, key=elision_order):
+        original = record["name"]
+
+        def free(name: str, original: str = original, record: dict[str, Any] = record) -> bool:
+            return owners.get(key(record, name), original) == original
+
+        chosen = next((c for c in _elision_candidates(original) if free(c)), None)
+        digest_length = 4
+        while chosen is None:
+            tagged = _digest_tagged(original, digest_length)
+            chosen = tagged if free(tagged) else None
+            digest_length += 1
+        record["name"] = chosen
+        owners[key(record, chosen)] = original
+        changes.append((record["id"], original, chosen, "elided"))
     return changes

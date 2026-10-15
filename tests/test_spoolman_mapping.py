@@ -484,3 +484,38 @@ def test_elision_is_idempotent_and_deterministic():
 def test_elision_of_unbroken_text_still_fits():
     short = shorten_name("x" * 200)
     assert len(short) <= NAME_MAX_LENGTH and "…" in short
+
+
+def test_refill_marker_is_never_dropped_as_a_parenthetical():
+    name = "PLA Silk High-Speed Quadruple Twilight Gorgeous Harmony Red (refill)"
+    assert len(name) > NAME_MAX_LENGTH
+    records = [named("a", name)]
+    changes = shorten_long_names(records)
+    assert changes[0][3] == "elided"
+    assert records[0]["name"].endswith("(refill)") and len(records[0]["name"]) <= NAME_MAX_LENGTH
+
+
+def test_elision_collision_shifts_the_cut_deterministically():
+    names = [
+        f"Impact Abrasive Uv H2O Microbe Resistant ROSA {mid} HardTech+ 83D Neon Yellow"
+        for mid in ("TPU", "PLA", "ABS")
+    ]
+    assert len({shorten_name(n) for n in names}) == 1  # premise: plain elision collides
+    forward = [named(str(i), n) for i, n in enumerate(names)]
+    backward = [named(str(i), n) for i, n in reversed(list(enumerate(names)))]
+    shorten_long_names(forward)
+    shorten_long_names(backward)
+    result = {r["id"]: r["name"] for r in forward}
+    assert len(set(result.values())) == 3
+    assert all("~" not in n and len(n) <= NAME_MAX_LENGTH for n in result.values())
+    assert {r["id"]: r["name"] for r in backward} == result
+
+
+def test_digest_tag_is_last_resort_when_no_cut_is_unique():
+    names = [f"{'a' * 70}{c}{'b' * 10} Red" for c in "ABCD"]
+    assert len({shorten_name(n) for n in names}) == 1
+    records = [named(str(i), n) for i, n in enumerate(names)]
+    shorten_long_names(records)
+    result = [r["name"] for r in records]
+    assert len(set(result)) == 4 and all(len(n) <= NAME_MAX_LENGTH for n in result)
+    assert sum("~" in n for n in result) == 3
