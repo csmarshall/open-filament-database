@@ -38,11 +38,19 @@ ID_PREFIX = "ofd_"
 # iridescent, ...) are intentionally not represented.
 FINISH_BY_TRAIT = {"matte": "matte"}
 PATTERN_BY_TRAIT = {"imitates_marble": "marble", "glitter": "sparkle"}
-# Multi-colour direction, same first-match convention. Both traits set is
-# ambiguous, so it yields None rather than a guess (see _multi_color_direction).
+# Multi-colour direction. Both traits set is ambiguous, so it yields None rather
+# than a guess (see _multi_color_direction).
 DIRECTION_BY_TRAIT = {"coextruded": "coaxial", "gradual_color_change": "longitudinal"}
 TRANSLUCENT_TRAITS = frozenset({"translucent", "transparent"})
 GLOW_TRAITS = frozenset({"glow"})
+
+# Spoolman's maximum filament name length: FilamentParameters.name max_length=64 in
+# spoolman/api/v1/filament.py and Filament.name String(64) in spoolman/database/models.py.
+NAME_MAX_LENGTH = 64
+ELLIPSIS = "…"
+# Share of the budget reserved for the end of an elided name, so a trailing colour survives.
+_ELIDED_TAIL_BUDGET = NAME_MAX_LENGTH // 3
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 _HEX_RE = re.compile(r"^[0-9a-f]{6}([0-9a-f]{2})?$")
 
@@ -98,25 +106,29 @@ def _first_match(traits: set[str], mapping: dict[str, str]) -> str | None:
     return next((value for trait, value in mapping.items() if trait in traits), None)
 
 
-def _colours(variant: dict) -> tuple[str | None, list[str] | None]:
-    """
-    Resolve a variant's colours into Spoolman's (color_hex, color_hexes) pair.
-
-    Follows SpoolmanDB's convention: a multi-colour filament carries ``color_hexes``
-    and a null ``color_hex``. OFD's crawler provides ``color_hexes`` only when the
-    source lists two or more colours; if validation leaves fewer than two usable
-    entries the variant is treated as single-colour.
-    """
-    valid = [h for h in map(norm_hex, variant.get("color_hexes") or []) if h]
-    if len(valid) >= 2:
-        return None, valid
-    return norm_hex(variant.get("color_hex")), None
-
-
 def _multi_color_direction(traits: set[str]) -> str | None:
     """coextruded -> coaxial, gradual_color_change -> longitudinal; neither or both -> None."""
     directions = {value for trait, value in DIRECTION_BY_TRAIT.items() if trait in traits}
     return directions.pop() if len(directions) == 1 else None
+
+
+def _colours(variant: dict, traits: set[str]) -> tuple[str | None, list[str] | None, str | None]:
+    """
+    Resolve a variant's colours into Spoolman's (color_hex, color_hexes, direction).
+
+    A multi-colour record (SpoolmanDB's convention: ``color_hexes`` and a null
+    ``color_hex``) is emitted only when the variant lists two or more valid colours
+    AND a direction is known, because Spoolman rejects ``multi_color_hexes`` without
+    a ``multi_color_direction``. OFD also stores colour lists for glow, temperature-
+    change and angle-shift colours, so without a ``coextruded`` or
+    ``gradual_color_change`` trait the list cannot be told apart from those and the
+    variant is exported as single-colour using its first valid colour.
+    """
+    valid = [h for h in map(norm_hex, variant.get("color_hexes") or []) if h]
+    direction = _multi_color_direction(traits)
+    if len(valid) >= 2 and direction:
+        return None, valid, direction
+    return (valid[0] if valid else norm_hex(variant.get("color_hex"))), None, None
 
 
 def is_discontinued(filament: dict, variant: dict, size: dict) -> bool:
@@ -155,7 +167,7 @@ def build_filament(
         name += " (refill)"
 
     empty_spool_weight = size.get("empty_spool_weight")
-    color_hex, color_hexes = _colours(variant)
+    color_hex, color_hexes, multi_color_direction = _colours(variant, traits)
 
     return {
         "id": f"{ID_PREFIX}{size['uuid']}",
@@ -169,7 +181,7 @@ def build_filament(
         "diameter": float(size["diameter"]),
         "color_hex": color_hex,
         "color_hexes": color_hexes,
-        "multi_color_direction": _multi_color_direction(traits) if color_hexes else None,
+        "multi_color_direction": multi_color_direction,
         "extruder_temp": pick_temp(
             filament.get("min_print_temperature"), filament.get("max_print_temperature")
         ),
@@ -230,3 +242,87 @@ def build_materials(filaments: Iterable[dict]) -> list[dict[str, Any]]:
             }
         )
     return materials
+
+
+def shorten_name(name: str) -> str:
+    """
+    Deterministically elide the middle of a name so it fits Spoolman's length limit.
+
+    Keeps whole words from the start and from the end, joined by one "… ", so a
+    trailing colour such as "Neon Yellow" survives. A name already within the limit
+    is returned unchanged, which makes the function idempotent. A single word longer
+    than its share is cut by characters.
+    """
+    if len(name) <= NAME_MAX_LENGTH:
+        return name
+
+    words = name.split()
+    tail_words: list[str] = []
+    while words and len(" ".join([words[-1], *tail_words])) <= _ELIDED_TAIL_BUDGET:
+        tail_words.insert(0, words.pop())
+    tail = " ".join(tail_words)
+    if not tail:
+        tail = words.pop()[-_ELIDED_TAIL_BUDGET:]
+
+    separator = ELLIPSIS + " "
+    head_budget = NAME_MAX_LENGTH - len(separator) - len(tail)
+    head_words: list[str] = []
+    for word in words:
+        if len(" ".join([*head_words, word])) > head_budget:
+            break
+        head_words.append(word)
+    head = " ".join(head_words) or (words[0][:head_budget] if words else "")
+    return f"{head}{separator}{tail}"
+
+
+def shorten_long_names(records: list[dict[str, Any]]) -> list[tuple[str, str, str, str]]:
+    """
+    Bring every record's name within Spoolman's limit, in place, and report what changed.
+
+    Per over-long name: (a) drop a trailing parenthetical if the remainder fits and
+    does not collide with another record's name for the same (manufacturer, material,
+    weight, diameter); otherwise (b) elide the middle (:func:`shorten_name`). Collisions
+    are judged against every other record's name and every other candidate, so the
+    result does not depend on record order.
+
+    Returns ``(id, original, shortened, step)`` tuples, step being "parenthetical" or
+    "elided".
+    """
+
+    def key(record: dict[str, Any], name: str) -> tuple:
+        return (
+            record["manufacturer"],
+            record["material"],
+            record["weight"],
+            record["diameter"],
+            name,
+        )
+
+    def stripped(name: str) -> str:
+        return _TRAILING_PARENTHETICAL_RE.sub("", name)
+
+    in_use: dict[tuple, int] = {}
+    for record in records:
+        name = record["name"]
+        candidate = stripped(name) if len(name) > NAME_MAX_LENGTH else name
+        if len(name) > NAME_MAX_LENGTH and len(candidate) > NAME_MAX_LENGTH:
+            continue
+        in_use[key(record, candidate)] = in_use.get(key(record, candidate), 0) + 1
+
+    changes = []
+    for record in records:
+        original = record["name"]
+        if len(original) <= NAME_MAX_LENGTH:
+            continue
+        candidate = stripped(original)
+        if (
+            candidate
+            and candidate != original
+            and len(candidate) <= NAME_MAX_LENGTH
+            and in_use[key(record, candidate)] == 1
+        ):
+            record["name"], step = candidate, "parenthetical"
+        else:
+            record["name"], step = shorten_name(original), "elided"
+        changes.append((record["id"], original, record["name"], step))
+    return changes

@@ -181,3 +181,10 @@ def test_refill_and_ids_in_output(tmp_path):
     assert by_id["ofd_u-ccc"]["name"] == "Black (refill)"
     assert by_id["ofd_u-ccc"]["diameter"] == 2.85
     assert by_id["ofd_u-bbb"]["name"] == "Black"
+
+
+def test_long_names_are_shortened_in_output(tmp_path):
+    db = make_db()
+    db.variants[0]["name"] = "Neon Yellow " + "Very Long Colour Name " * 4 + "(Edition)"
+    _, filaments, _ = run(tmp_path, db)
+    assert filaments and all(len(f["name"]) <= 64 for f in filaments)

@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 
 from ..models import Database
-from ..spoolman_mapping import build_filament, build_materials
+from ..spoolman_mapping import build_filament, build_materials, shorten_long_names
 
 README_TEXT = """\
 Spoolman external filament catalog from the Open Filament Database
@@ -46,14 +46,27 @@ One record per purchasable spool (every size of every colour). Ids are
 uuid, so they stay stable across rebuilds and edits. Spoolman has no alias
 concept: if a uuid is ever retired (recorded as "moved_from" on its survivor),
 links to the old id will not follow; api/v1/uuid-index.json maps old to current.
+
 Values the database does not record (spool weight, colour, temperatures, ...) are
-null rather than guessed. Multi-colour filaments carry color_hexes and a null
-color_hex; multi_color_direction is coaxial for coextruded, longitudinal for
-gradual colour change, and null when the database does not say. Discontinued or incomplete products (no density,
-weight or diameter) are left out. Extruder and bed temperature are the midpoint
-of the recommended range, ignoring a bound of 0. materials.json holds, per
-material type, the median density and temperatures across the exported
-(non-discontinued) filaments of that material that record the value.
+null rather than guessed. Discontinued or incomplete products (no density, weight
+or diameter) are left out. Extruder and bed temperature are the midpoint of the
+recommended range, ignoring a bound of 0.
+
+Colours: a filament is exported as multi-colour (color_hexes, null color_hex) only
+when the database lists two or more colours AND says how they are laid out:
+coextruded gives multi_color_direction "coaxial", gradual colour change gives
+"longitudinal". Spoolman requires a direction for multi-colour filaments, and the
+database also uses colour lists for glow, temperature-change and angle-shift
+colours, so a list with no (or both) of those traits cannot be told apart from
+them and is exported as single-colour using its first colour.
+
+Names longer than Spoolman's 64-character limit are shortened deterministically:
+a trailing parenthetical is dropped if the rest is still unique for that
+manufacturer, material, weight and diameter, otherwise the middle is elided.
+
+materials.json holds, per material type, the median density and temperatures
+across the exported (non-discontinued) filaments of that material that record
+the value.
 
 Found a wrong number? Corrections are welcome at
 https://openfilamentdatabase.org/
@@ -101,6 +114,7 @@ def export_spoolman(
         exported_filament_ids.add(filament["id"])
 
     records.sort(key=lambda record: record["id"])
+    renamed = shorten_long_names(records)
     materials = build_materials(filaments[fid] for fid in sorted(exported_filament_ids))
 
     # Compact separators: Spoolman downloads these on every sync.
@@ -120,5 +134,10 @@ def export_spoolman(
             + (f"; {no_uuid} without a uuid" if no_uuid else "")
             + ")"
         )
+
+    if renamed:
+        print(f"  Shortened: {len(renamed)} names over Spoolman's limit, e.g.")
+        for _, original, shortened, step in renamed[:3]:
+            print(f"    [{step}] {original!r} -> {shortened!r}")
 
     return len(records)

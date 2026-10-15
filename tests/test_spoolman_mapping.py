@@ -8,6 +8,7 @@ as a failing test rather than as a catalog entry that quietly lies.
 from ofd.builder.spoolman_mapping import (
     FINISH_BY_TRAIT,
     ID_PREFIX,
+    NAME_MAX_LENGTH,
     PATTERN_BY_TRAIT,
     build_filament,
     build_materials,
@@ -15,6 +16,8 @@ from ofd.builder.spoolman_mapping import (
     norm,
     norm_hex,
     pick_temp,
+    shorten_long_names,
+    shorten_name,
 )
 
 BRAND = {"id": "b1", "name": "Acme", "slug": "acme"}
@@ -210,7 +213,7 @@ MULTI = ["#FF0000", "#00ff00"]
 
 
 def test_multicolour_emits_color_hexes_and_nulls_color_hex():
-    record = build(var=variant(color_hex="#FF0000", color_hexes=MULTI))
+    record = build(var=variant(color_hex="#FF0000", color_hexes=MULTI, traits={"coextruded": True}))
     assert record["color_hexes"] == ["ff0000", "00ff00"]
     assert record["color_hex"] is None
 
@@ -225,28 +228,58 @@ def test_gradual_color_change_is_longitudinal():
     assert record["multi_color_direction"] == "longitudinal"
 
 
-def test_direction_null_when_neither_trait():
-    assert build(var=variant(color_hexes=MULTI))["multi_color_direction"] is None
-    assert (
-        build(var=variant(color_hexes=MULTI, traits={"matte": True}))["multi_color_direction"]
-        is None
-    )
+def test_no_direction_trait_falls_back_to_first_colour():
+    """Spoolman rejects multi_color_hexes without a direction, and OFD also uses the list
+    for glow, thermochromic and angle-shift colours, so without a trait it is single-colour."""
+    record = build(var=variant(color_hex="#FF0000", color_hexes=MULTI))
+    assert record["color_hex"] == "ff0000"
+    assert record["color_hexes"] is None
+    assert record["multi_color_direction"] is None
+    matte = build(var=variant(color_hexes=MULTI, traits={"matte": True}))
+    assert matte["color_hexes"] is None
+    assert matte["color_hex"] == "ff0000"
 
 
-def test_direction_null_when_both_traits():
+def test_both_direction_traits_fall_back_to_first_colour():
     both = {"coextruded": True, "gradual_color_change": True}
-    assert build(var=variant(color_hexes=MULTI, traits=both))["multi_color_direction"] is None
+    record = build(var=variant(color_hexes=MULTI, traits=both))
+    assert record["color_hex"] == "ff0000"
+    assert record["color_hexes"] is None
+    assert record["multi_color_direction"] is None
+
+
+def test_fallback_uses_first_valid_colour():
+    record = build(var=variant(color_hex="#123456", color_hexes=["oops", "#00FF00", "#0000FF"]))
+    assert record["color_hex"] == "00ff00"
+
+
+def test_multicolour_always_has_a_direction():
+    for traits in ({"coextruded": True}, {"gradual_color_change": True}, {}):
+        record = build(var=variant(color_hexes=MULTI, traits=traits))
+        assert (record["color_hexes"] is None) == (record["multi_color_direction"] is None)
+
+
+def test_duplicate_colours_are_kept_not_deduplicated():
+    record = build(var=variant(color_hexes=["#FF0000", "#ff0000"], traits={"coextruded": True}))
+    assert record["color_hexes"] == ["ff0000", "ff0000"]
+    assert record["multi_color_direction"] == "coaxial"
 
 
 def test_invalid_entries_dropped_and_collapse_to_single_colour():
-    record = build(var=variant(color_hex="#FF0000", color_hexes=["#FF0000", "oops"]))
+    record = build(
+        var=variant(
+            color_hex="#FF0000", color_hexes=["#FF0000", "oops"], traits={"coextruded": True}
+        )
+    )
     assert record["color_hexes"] is None
     assert record["color_hex"] == "ff0000"
     assert record["multi_color_direction"] is None
 
 
 def test_invalid_entries_filtered_but_two_valid_remain():
-    record = build(var=variant(color_hexes=["#FF0000", "oops", "#0000FF"]))
+    record = build(
+        var=variant(color_hexes=["#FF0000", "oops", "#0000FF"], traits={"coextruded": True})
+    )
     assert record["color_hexes"] == ["ff0000", "0000ff"]
 
 
@@ -353,3 +386,101 @@ def test_materials_are_medians_of_ofd_filaments():
 
 def test_materials_empty():
     assert build_materials([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Name length
+# ---------------------------------------------------------------------------
+
+
+def named(record_id: str, name: str, **overrides) -> dict:
+    record = {
+        "id": record_id,
+        "manufacturer": "Acme",
+        "material": "PLA",
+        "weight": 1000.0,
+        "diameter": 1.75,
+        "name": name,
+    }
+    record.update(overrides)
+    return record
+
+
+def test_name_limit_is_spoolmans():
+    assert NAME_MAX_LENGTH == 64
+
+
+def test_short_names_untouched():
+    exact = "x" * NAME_MAX_LENGTH
+    assert shorten_name(exact) == exact
+    records = [named("a", exact), named("b", "Red")]
+    assert shorten_long_names(records) == []
+    assert records[0]["name"] == exact
+
+
+def test_just_over_the_limit_is_shortened_to_the_limit():
+    name = " ".join(["word"] * 13)  # 64 chars
+    assert len(name) == 64 and shorten_name(name) == name
+    over = name + "s"
+    assert len(over) == 65
+    assert len(shorten_name(over)) <= NAME_MAX_LENGTH
+
+
+def test_trailing_parenthetical_dropped_when_it_fits_and_is_unique():
+    long_name = "PLA Silk High-Speed Quadruple Twilight Glow (Black & Red & Dark Purple & Gold)"
+    records = [named("a", long_name)]
+    changes = shorten_long_names(records)
+    assert records[0]["name"] == "PLA Silk High-Speed Quadruple Twilight Glow"
+    assert changes == [
+        ("a", long_name, "PLA Silk High-Speed Quadruple Twilight Glow", "parenthetical")
+    ]
+
+
+def test_parenthetical_not_dropped_when_it_would_collide():
+    base = "PLA Matte High Speed Gradient Multi-Color"
+    one = f"{base} (coffee & khaki & white & dark brown & yellow & light brown)"
+    two = f"{base} (dark brown & yellow & light brown & coffee & khaki & white)"
+    records = [named("a", one), named("b", two)]
+    shorten_long_names(records)
+    assert records[0]["name"] != records[1]["name"]
+    assert all(len(r["name"]) <= NAME_MAX_LENGTH for r in records)
+    assert all("…" in r["name"] for r in records)
+
+
+def test_parenthetical_not_dropped_when_it_would_collide_with_a_short_record():
+    long_name = "PLA Rainbow Long Product Line Name Gradient Multi-Colour Super (a & b & c & d)"
+    stripped = "PLA Rainbow Long Product Line Name Gradient Multi-Colour Super"
+    records = [named("a", long_name), named("b", stripped)]
+    shorten_long_names(records)
+    assert records[1]["name"] == stripped
+    assert records[0]["name"] != stripped
+
+
+def test_collision_is_judged_per_weight_and_diameter():
+    long_name = "PLA Rainbow Long Product Line Name Gradient Multi-Colour Super (a & b & c & d)"
+    stripped = "PLA Rainbow Long Product Line Name Gradient Multi-Colour Super"
+    records = [named("a", long_name), named("b", stripped, weight=500.0)]
+    shorten_long_names(records)
+    assert records[0]["name"] == stripped
+
+
+def test_middle_elision_keeps_start_and_trailing_colour():
+    name = "Impact Abrasive Uv H2O Microbe Resistant ROSA TPU HardTech+ 83D Neon Yellow"
+    assert len(name) > NAME_MAX_LENGTH
+    short = shorten_name(name)
+    assert len(short) <= NAME_MAX_LENGTH
+    assert short.startswith("Impact Abrasive")
+    assert short.endswith("Neon Yellow")
+    assert short.count("…") == 1
+
+
+def test_elision_is_idempotent_and_deterministic():
+    name = "Impact Abrasive Uv H2O Microbe Resistant ROSA TPU HardTech+ 83D Neon Yellow"
+    once = shorten_name(name)
+    assert shorten_name(once) == once
+    assert shorten_name(name) == once
+
+
+def test_elision_of_unbroken_text_still_fits():
+    short = shorten_name("x" * 200)
+    assert len(short) <= NAME_MAX_LENGTH and "…" in short
