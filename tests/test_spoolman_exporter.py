@@ -30,6 +30,28 @@ def make_db() -> Database:
             "name": "No Density PLA",
             "material": "PLA",
         },
+        # Has a density, but every size is discontinued: must not influence materials.json.
+        {
+            "id": "f3",
+            "brand_id": "b1",
+            "material_id": "m1",
+            "name": "Acme ABS",
+            "material": "ABS",
+            "density": 1.04,
+            "min_print_temperature": 240,
+            "max_print_temperature": 240,
+        },
+        # Has a density, but its only size has no diameter-complete data: also not exported.
+        {
+            "id": "f4",
+            "brand_id": "b1",
+            "material_id": "m1",
+            "name": "Acme PLA Skewed",
+            "material": "PLA",
+            "density": 9.99,
+            "min_print_temperature": 300,
+            "max_print_temperature": 300,
+        },
     ]
     db.variants = [
         {"id": "v1", "filament_id": "f1", "name": "Black", "color_hex": "#000000"},
@@ -41,19 +63,61 @@ def make_db() -> Database:
             "discontinued": True,
         },
         {"id": "v3", "filament_id": "f2", "name": "Red", "color_hex": "#ff0000"},
+        {
+            "id": "v4",
+            "filament_id": "f3",
+            "name": "Gone",
+            "color_hex": "#00ff00",
+            "discontinued": True,
+        },
+        {"id": "v5", "filament_id": "f4", "name": "Partial", "color_hex": "#0000ff"},
     ]
     db.sizes = [
-        {"id": "zzz", "variant_id": "v1", "diameter": 1.75, "filament_weight": 1000},
+        {
+            "id": "zzz",
+            "uuid": "u-bbb",
+            "variant_id": "v1",
+            "diameter": 1.75,
+            "filament_weight": 1000,
+        },
         {
             "id": "aaa",
+            "uuid": "u-ccc",
             "variant_id": "v1",
             "diameter": 2.85,
             "filament_weight": 750,
             "spool_refill": True,
         },
-        {"id": "ddd", "variant_id": "v2", "diameter": 1.75, "filament_weight": 1000},
-        {"id": "nod", "variant_id": "v3", "diameter": 1.75, "filament_weight": 1000},
-        {"id": "dangling", "variant_id": "missing", "diameter": 1.75, "filament_weight": 1000},
+        {
+            "id": "ddd",
+            "uuid": "u-ddd",
+            "variant_id": "v2",
+            "diameter": 1.75,
+            "filament_weight": 1000,
+        },
+        {
+            "id": "nod",
+            "uuid": "u-nod",
+            "variant_id": "v3",
+            "diameter": 1.75,
+            "filament_weight": 1000,
+        },
+        {"id": "nouuid", "variant_id": "v1", "diameter": 1.75, "filament_weight": 500},
+        {
+            "id": "ghost1",
+            "uuid": "u-g1",
+            "variant_id": "v4",
+            "diameter": 1.75,
+            "filament_weight": 1000,
+        },
+        {"id": "ghost2", "uuid": "u-g2", "variant_id": "v5", "diameter": 1.75},
+        {
+            "id": "dangling",
+            "uuid": "u-dangling",
+            "variant_id": "missing",
+            "diameter": 1.75,
+            "filament_weight": 1000,
+        },
     ]
     return db
 
@@ -82,17 +146,17 @@ def test_writes_the_files_spoolman_fetches(tmp_path):
 def test_skips_discontinued_missing_density_and_dangling(tmp_path):
     count, filaments, _ = run(tmp_path)
     assert count == len(filaments) == 2
-    assert {f["id"] for f in filaments} == {"ofd_zzz", "ofd_aaa"}
+    assert {f["id"] for f in filaments} == {"ofd_u-bbb", "ofd_u-ccc"}
 
 
-def test_include_discontinued(tmp_path):
-    _, filaments, _ = run(tmp_path, include_discontinued=True)
-    assert "ofd_ddd" in {f["id"] for f in filaments}
+def test_size_without_uuid_is_not_exported(tmp_path):
+    _, filaments, _ = run(tmp_path)
+    assert not any(f["weight"] == 500 for f in filaments)
 
 
 def test_sorted_by_id(tmp_path):
     _, filaments, _ = run(tmp_path)
-    assert [f["id"] for f in filaments] == ["ofd_aaa", "ofd_zzz"]
+    assert [f["id"] for f in filaments] == ["ofd_u-bbb", "ofd_u-ccc"]
 
 
 def test_output_is_deterministic(tmp_path):
@@ -114,6 +178,6 @@ def test_materials_derived_from_exported_filaments_only(tmp_path):
 def test_refill_and_ids_in_output(tmp_path):
     _, filaments, _ = run(tmp_path)
     by_id = {f["id"]: f for f in filaments}
-    assert by_id["ofd_aaa"]["name"] == "Black (refill)"
-    assert by_id["ofd_aaa"]["diameter"] == 2.85
-    assert by_id["ofd_zzz"]["name"] == "Black"
+    assert by_id["ofd_u-ccc"]["name"] == "Black (refill)"
+    assert by_id["ofd_u-ccc"]["diameter"] == 2.85
+    assert by_id["ofd_u-bbb"]["name"] == "Black"

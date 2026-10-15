@@ -6,7 +6,9 @@ as a failing test rather than as a catalog entry that quietly lies.
 """
 
 from ofd.builder.spoolman_mapping import (
+    FINISH_BY_TRAIT,
     ID_PREFIX,
+    PATTERN_BY_TRAIT,
     build_filament,
     build_materials,
     display_name,
@@ -41,7 +43,13 @@ def variant(**overrides) -> dict:
 
 
 def size(**overrides) -> dict:
-    base = {"id": "s1", "variant_id": "v1", "diameter": 1.75, "filament_weight": 1000}
+    base = {
+        "id": "s1",
+        "uuid": "11111111-1111-4111-8111-111111111111",
+        "variant_id": "v1",
+        "diameter": 1.75,
+        "filament_weight": 1000,
+    }
     base.update(overrides)
     return base
 
@@ -140,7 +148,7 @@ def test_bare_material_without_brand_dropped():
 
 def test_record_shape_and_id():
     record = build()
-    assert record["id"] == f"{ID_PREFIX}s1" == "ofd_s1"
+    assert record["id"] == f"{ID_PREFIX}11111111-1111-4111-8111-111111111111"
     assert record["manufacturer"] == "Acme"
     assert record["name"] == "Black"
     assert record["material"] == "PLA"
@@ -170,6 +178,32 @@ def test_record_shape_and_id():
         "translucent",
         "glow",
     }
+
+
+def test_id_uses_canonical_uuid_not_derived_id():
+    """The derived ``id`` changes when a name is fixed; the stored ``uuid`` does not."""
+    record = build(siz=size(id="derived-id", uuid="canonical-uuid"))
+    assert record["id"] == "ofd_canonical-uuid"
+    assert "derived-id" not in record["id"]
+
+
+def test_size_without_uuid_is_skipped_not_given_a_derived_id():
+    assert build(siz=size(uuid=None)) is None
+    assert build(siz=size(uuid="")) is None
+
+
+def test_mapped_enum_values_are_valid_spoolman_enums():
+    # Hard-coded from spoolman/externaldb.py (Finish, Pattern, MultiColorDirection).
+    spoolman_finish = {"matte", "glossy"}
+    spoolman_pattern = {"marble", "sparkle"}
+    spoolman_direction = {"coaxial", "longitudinal"}
+    assert set(FINISH_BY_TRAIT.values()) <= spoolman_finish
+    assert set(PATTERN_BY_TRAIT.values()) <= spoolman_pattern
+    everything = dict.fromkeys((*FINISH_BY_TRAIT, *PATTERN_BY_TRAIT), True)
+    record = build(var=variant(traits=everything))
+    assert record["finish"] in spoolman_finish
+    assert record["pattern"] in spoolman_pattern
+    assert record["multi_color_direction"] in spoolman_direction | {None}
 
 
 def test_no_invented_values():

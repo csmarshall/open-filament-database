@@ -44,7 +44,7 @@ Address entities by **path**, e.g. `/api/v1/brands/{brand}/materials/{MATERIAL}/
 
 Filaments are also published as **ready-to-import [OrcaSlicer presets](docs/orcaslicer.md)** — per filament, or per brand as a zip. Download one and import it with File → Import → Import Configs.
 
-For [Spoolman](https://github.com/Donkie/Spoolman) users there is a **[ready-made external filament catalog](docs/spoolman.md)** — set `EXTERNAL_DB_URL` and every filament shows up in Spoolman's dropdown.
+For [Spoolman](https://github.com/Donkie/Spoolman) users there is a **[ready-made external filament catalog](docs/spoolman.md)** — set `EXTERNAL_DB_URL` and most filaments show up in Spoolman's dropdown.
 
 > ℹ️ UUID-based lookups are still supported for integrations that need stable opaque identifiers (NFC tags, slicer profiles), but path-based addressing is what we recommend for everyone else — it's human-readable and stable across cosmetic renames.
 

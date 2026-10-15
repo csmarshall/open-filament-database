@@ -1,12 +1,12 @@
 # Spoolman External Filament Catalog
 
-The Open Filament Database is published in the format [Spoolman](https://github.com/Donkie/Spoolman) reads for its **external filament database**. Point Spoolman at it and every filament in the database appears in Spoolman's "add filament" dropdown, with density, diameter, weight, temperatures and colour already filled in.
+The Open Filament Database is published in the format [Spoolman](https://github.com/Donkie/Spoolman) reads for its **external filament database**. Point Spoolman at it and most filaments in the database appear in Spoolman's "add filament" dropdown, with density, diameter, weight and colour filled in, and temperatures and spool weight where the database records them. Discontinued products and rows missing a density, net weight or diameter are left out, and about a third of the entries have no temperatures and most have no empty-spool weight, because the database does not have them for every filament.
 
 ---
 
 ## Use it
 
-Set `EXTERNAL_DB_URL` on the Spoolman container to the `spoolman/` directory of the published site, **with the trailing slash**, and restart Spoolman:
+Set `EXTERNAL_DB_URL` on the Spoolman container to the `spoolman/` directory of the published site, **with the trailing slash**, and restart Spoolman. Once the first build containing this catalog is published, `https://api.openfilamentdatabase.org/spoolman/` is the expected location:
 
 ```yaml
 services:
@@ -27,7 +27,7 @@ One record per purchasable spool: every size of every colour of every filament b
 
 | Spoolman field | Source in the database |
 | --- | --- |
-| `id` | `ofd_` + the size's `id`. Stable across rebuilds: Spoolman installs link to these ids, so the scheme will not change. |
+| `id` | `ofd_` + the size's canonical `uuid` from `sizes.json`. The uuid is OFD's stable identifier (it survives renames and typo fixes), and Spoolman installs link to these ids, so the scheme will not change. |
 | `manufacturer` | `brand.json` → `name` |
 | `name` | The filament name plus the variant (colour) name, with a leading brand name and a bare material name removed. `PETG+` and `PLA Matte` are product lines and are kept. Refill sizes get a ` (refill)` suffix. |
 | `material` | `filament.json` → `material` |
@@ -42,11 +42,13 @@ One record per purchasable spool: every size of every colour of every filament b
 | `translucent` | `translucent` or `transparent` trait |
 | `glow` | `glow` trait |
 
-Where the database has no value the field is `null`; nothing is guessed. `spool_type`, `color_hexes` and `multi_color_direction` are always `null` today, because the database does not carry them in a form Spoolman understands.
+Where the database has no value the field is `null`; nothing is guessed. `spool_type` and `multi_color_direction` are always `null`, and `color_hexes` is currently always `null` too: multi-colour filaments carry only their first colour in `color_hex` for now.
 
-**Left out:** discontinued products, and any size without a density, net weight or diameter, since Spoolman requires all three.
+**Left out:** discontinued products, any size without a density, net weight or diameter (Spoolman requires all three), and any size without a `uuid` (the id is never derived from anything else).
 
-**`materials.json`** holds one entry per material type. The database does not record per-material defaults, so density and temperatures are the **median across the database's own filaments of that material**, and are `null` where no filament records a temperature.
+**Retired uuids.** When data is merged, a retired uuid is recorded in the survivor's `moved_from` (see the [manual](manual.md#moved--former-uuids-moved_from)). Spoolman has no alias concept, so a Spoolman filament linked to a retired id will not follow it automatically; [`api/v1/uuid-index.json`](https://api.openfilamentdatabase.org/api/v1/uuid-index.json) maps former uuids to current ones.
+
+**`materials.json`** holds one entry per material type. The database does not record per-material defaults, so density and temperatures are the **median across the exported (non-discontinued) filaments of that material that record the value**. Temperature medians ignore zero bounds like the per-filament midpoints do, midpoints use Python's round-half-even, and a temperature is `null` where no filament of the material records one.
 
 Output is sorted by `id`, so rebuilding unchanged data gives byte-identical files.
 

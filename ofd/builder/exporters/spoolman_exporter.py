@@ -42,11 +42,16 @@ then restart Spoolman. It re-syncs on an hourly interval.
 WHAT THIS IS
 ------------
 One record per purchasable spool (every size of every colour). Ids are
-"ofd_<size uuid>" and are stable across rebuilds. Values the database does not
-record (spool weight, colour, temperatures, ...) are null rather than guessed.
-Discontinued products are left out. Extruder and bed temperature are the midpoint
-of the recommended range. materials.json holds the median density and temperatures
-of each material type across the database.
+"ofd_<size uuid>", where the uuid is the size's canonical Open Filament Database
+uuid, so they stay stable across rebuilds and edits. Spoolman has no alias
+concept: if a uuid is ever retired (recorded as "moved_from" on its survivor),
+links to the old id will not follow; api/v1/uuid-index.json maps old to current.
+Values the database does not record (spool weight, colour, temperatures, ...) are
+null rather than guessed, and discontinued or incomplete products (no density,
+weight or diameter) are left out. Extruder and bed temperature are the midpoint
+of the recommended range, ignoring a bound of 0. materials.json holds, per
+material type, the median density and temperatures across the exported
+(non-discontinued) filaments of that material that record the value.
 
 Found a wrong number? Corrections are welcome at
 https://openfilamentdatabase.org/
@@ -58,7 +63,6 @@ def export_spoolman(
     output_dir: str,
     version: str,
     generated_at: str,
-    include_discontinued: bool = False,
     **kwargs,
 ) -> int:
     """
@@ -74,6 +78,7 @@ def export_spoolman(
     records: list[dict] = []
     exported_filament_ids: set[str] = set()
     dangling = 0
+    no_uuid = 0
 
     for size in db.sizes:
         variant = variants.get(size["variant_id"])
@@ -83,7 +88,11 @@ def export_spoolman(
             dangling += 1
             continue
 
-        record = build_filament(brand, filament, variant, size, include_discontinued)
+        if not size.get("uuid"):
+            no_uuid += 1
+            continue
+
+        record = build_filament(brand, filament, variant, size)
         if record is None:
             continue
         records.append(record)
@@ -106,6 +115,7 @@ def export_spoolman(
         print(
             f"  Skipped: {skipped} sizes (discontinued, or missing density/weight/diameter"
             + (f"; {dangling} dangling references" if dangling else "")
+            + (f"; {no_uuid} without a uuid" if no_uuid else "")
             + ")"
         )
 

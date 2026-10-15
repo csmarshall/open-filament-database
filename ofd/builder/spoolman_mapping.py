@@ -23,14 +23,14 @@ import statistics
 from collections.abc import Iterable
 from typing import Any
 
-# Spoolman records link to a size by this id, so installs that picked an OFD
-# filament keep working across rebuilds only while the scheme stays stable.
-# Treat it as a published contract: never change it.
+# Spoolman installs link to a record by its id, so the id must survive rebuilds
+# and data edits. It is "ofd_" + the size's stored canonical ``uuid`` — never the
+# derived ``id`` (a uuid5 of names, weight, gtin, array index, ...), which changes
+# when a typo is fixed. Treat the scheme as a published contract: never change it.
+# Spoolman has no alias concept, so if a size's uuid is ever retired and recorded
+# in a survivor's ``moved_from``, links to the old id will not follow; consumers
+# can resolve it through api/v1/uuid-index.json.
 ID_PREFIX = "ofd_"
-
-# Enum values accepted by Spoolman's ExternalFilament model.
-SPOOLMAN_FINISHES = frozenset({"matte", "glossy"})
-SPOOLMAN_PATTERNS = frozenset({"marble", "sparkle"})
 
 # OFD trait -> Spoolman enum value, in precedence order: Spoolman allows a single
 # finish and a single pattern, so when a variant carries several the first wins
@@ -113,10 +113,13 @@ def build_filament(
     Build one Spoolman ``ExternalFilament`` record from an OFD size row.
 
     Returns None when the row cannot be represented honestly: discontinued
-    (unless asked for), or missing density, net weight or diameter — all three
+    (unless asked for), or missing the size's canonical uuid (the id is never
+    derived from anything else), density, net weight or diameter — the last three
     are required by Spoolman and none may be guessed.
     """
     if not include_discontinued and is_discontinued(filament, variant, size):
+        return None
+    if not size.get("uuid"):
         return None
     if not filament.get("density") or not size.get("filament_weight") or not size.get("diameter"):
         return None
@@ -130,7 +133,7 @@ def build_filament(
     empty_spool_weight = size.get("empty_spool_weight")
 
     return {
-        "id": f"{ID_PREFIX}{size['id']}",
+        "id": f"{ID_PREFIX}{size['uuid']}",
         "manufacturer": brand["name"],
         "name": name,
         "material": filament["material"],
@@ -166,7 +169,8 @@ def build_materials(filaments: Iterable[dict]) -> list[dict[str, Any]]:
     OFD's material entities carry no density or temperatures, so the per-material
     defaults Spoolman wants are the **median across OFD's own filaments** of that
     material type: density, and the midpoint temperatures from :func:`pick_temp`.
-    A temperature no filament of the material records stays None. Spoolman only
+    Temperature medians ignore zero bounds (see :func:`pick_temp`) and use Python's
+    round-half-even; a temperature no filament of the material records stays None. Spoolman only
     uses these to pre-fill a form for a material that has no filament picked, so
     a statistical default is acceptable there; change the policy here and nowhere
     else.
