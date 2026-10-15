@@ -206,6 +206,58 @@ def test_mapped_enum_values_are_valid_spoolman_enums():
     assert record["multi_color_direction"] in spoolman_direction | {None}
 
 
+MULTI = ["#FF0000", "#00ff00"]
+
+
+def test_multicolour_emits_color_hexes_and_nulls_color_hex():
+    record = build(var=variant(color_hex="#FF0000", color_hexes=MULTI))
+    assert record["color_hexes"] == ["ff0000", "00ff00"]
+    assert record["color_hex"] is None
+
+
+def test_coextruded_is_coaxial():
+    record = build(var=variant(color_hexes=MULTI, traits={"coextruded": True}))
+    assert record["multi_color_direction"] == "coaxial"
+
+
+def test_gradual_color_change_is_longitudinal():
+    record = build(var=variant(color_hexes=MULTI, traits={"gradual_color_change": True}))
+    assert record["multi_color_direction"] == "longitudinal"
+
+
+def test_direction_null_when_neither_trait():
+    assert build(var=variant(color_hexes=MULTI))["multi_color_direction"] is None
+    assert (
+        build(var=variant(color_hexes=MULTI, traits={"matte": True}))["multi_color_direction"]
+        is None
+    )
+
+
+def test_direction_null_when_both_traits():
+    both = {"coextruded": True, "gradual_color_change": True}
+    assert build(var=variant(color_hexes=MULTI, traits=both))["multi_color_direction"] is None
+
+
+def test_invalid_entries_dropped_and_collapse_to_single_colour():
+    record = build(var=variant(color_hex="#FF0000", color_hexes=["#FF0000", "oops"]))
+    assert record["color_hexes"] is None
+    assert record["color_hex"] == "ff0000"
+    assert record["multi_color_direction"] is None
+
+
+def test_invalid_entries_filtered_but_two_valid_remain():
+    record = build(var=variant(color_hexes=["#FF0000", "oops", "#0000FF"]))
+    assert record["color_hexes"] == ["ff0000", "0000ff"]
+
+
+def test_direction_ignored_for_single_colour_variants():
+    """Traits alone never produce a direction: a single colour has none."""
+    record = build(var=variant(traits={"coextruded": True}))
+    assert record["multi_color_direction"] is None
+    assert record["color_hexes"] is None
+    assert record["color_hex"] == "000000"
+
+
 def test_no_invented_values():
     """Where OFD has no value the record carries null, never a guess."""
     record = build(

@@ -47,7 +47,9 @@ uuid, so they stay stable across rebuilds and edits. Spoolman has no alias
 concept: if a uuid is ever retired (recorded as "moved_from" on its survivor),
 links to the old id will not follow; api/v1/uuid-index.json maps old to current.
 Values the database does not record (spool weight, colour, temperatures, ...) are
-null rather than guessed, and discontinued or incomplete products (no density,
+null rather than guessed. Multi-colour filaments carry color_hexes and a null
+color_hex; multi_color_direction is coaxial for coextruded, longitudinal for
+gradual colour change, and null when the database does not say. Discontinued or incomplete products (no density,
 weight or diameter) are left out. Extruder and bed temperature are the midpoint
 of the recommended range, ignoring a bound of 0. materials.json holds, per
 material type, the median density and temperatures across the exported

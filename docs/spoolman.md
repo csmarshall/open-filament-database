@@ -35,14 +35,17 @@ One record per purchasable spool: every size of every colour of every filament b
 | `weight` | `sizes.json` → `filament_weight` |
 | `diameter` | `sizes.json` → `diameter` |
 | `spool_weight` | `sizes.json` → `empty_spool_weight`, otherwise `null` |
-| `color_hex` | `variant.json` → `color_hex`, lowercased without `#`; `null` if malformed |
+| `color_hex` | `variant.json` → `color_hex`, lowercased without `#`; `null` if malformed, or for multi-colour variants (see below) |
+| `color_hexes`, `multi_color_direction` | Multi-colour variants only; see below |
 | `extruder_temp`, `bed_temp` | The midpoint of the recommended min/max range. A bound of `0` is ignored rather than averaged. |
 | `finish` | `matte` trait → `matte` |
 | `pattern` | `imitates_marble` trait → `marble`, `glitter` trait → `sparkle` |
 | `translucent` | `translucent` or `transparent` trait |
 | `glow` | `glow` trait |
 
-Where the database has no value the field is `null`; nothing is guessed. `spool_type` and `multi_color_direction` are always `null`, and `color_hexes` is currently always `null` too: multi-colour filaments carry only their first colour in `color_hex` for now.
+Where the database has no value the field is `null`; nothing is guessed. `spool_type` is always `null`.
+
+**Multi-colour filaments** follow SpoolmanDB's convention: they carry `color_hexes` (every colour, in order) and a `null` `color_hex`. `multi_color_direction` is `coaxial` for the `coextruded` trait and `longitudinal` for the `gradual_color_change` trait; if neither or both are set it is `null`, because the database does not say and nothing is guessed. If fewer than two colours are valid after checking, the variant is treated as single-colour. This relies on the `color_hexes` variant key, which the build produces from `color_hex` arrays (see `tests/test_multicolor_variants.py`).
 
 **Left out:** discontinued products, any size without a density, net weight or diameter (Spoolman requires all three), and any size without a `uuid` (the id is never derived from anything else).
 

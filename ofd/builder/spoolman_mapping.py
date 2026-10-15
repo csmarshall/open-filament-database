@@ -38,6 +38,9 @@ ID_PREFIX = "ofd_"
 # iridescent, ...) are intentionally not represented.
 FINISH_BY_TRAIT = {"matte": "matte"}
 PATTERN_BY_TRAIT = {"imitates_marble": "marble", "glitter": "sparkle"}
+# Multi-colour direction, same first-match convention. Both traits set is
+# ambiguous, so it yields None rather than a guess (see _multi_color_direction).
+DIRECTION_BY_TRAIT = {"coextruded": "coaxial", "gradual_color_change": "longitudinal"}
 TRANSLUCENT_TRAITS = frozenset({"translucent", "transparent"})
 GLOW_TRAITS = frozenset({"glow"})
 
@@ -95,6 +98,27 @@ def _first_match(traits: set[str], mapping: dict[str, str]) -> str | None:
     return next((value for trait, value in mapping.items() if trait in traits), None)
 
 
+def _colours(variant: dict) -> tuple[str | None, list[str] | None]:
+    """
+    Resolve a variant's colours into Spoolman's (color_hex, color_hexes) pair.
+
+    Follows SpoolmanDB's convention: a multi-colour filament carries ``color_hexes``
+    and a null ``color_hex``. OFD's crawler provides ``color_hexes`` only when the
+    source lists two or more colours; if validation leaves fewer than two usable
+    entries the variant is treated as single-colour.
+    """
+    valid = [h for h in map(norm_hex, variant.get("color_hexes") or []) if h]
+    if len(valid) >= 2:
+        return None, valid
+    return norm_hex(variant.get("color_hex")), None
+
+
+def _multi_color_direction(traits: set[str]) -> str | None:
+    """coextruded -> coaxial, gradual_color_change -> longitudinal; neither or both -> None."""
+    directions = {value for trait, value in DIRECTION_BY_TRAIT.items() if trait in traits}
+    return directions.pop() if len(directions) == 1 else None
+
+
 def is_discontinued(filament: dict, variant: dict, size: dict) -> bool:
     """A size is discontinued if it, its variant or its filament is."""
     return bool(
@@ -131,6 +155,7 @@ def build_filament(
         name += " (refill)"
 
     empty_spool_weight = size.get("empty_spool_weight")
+    color_hex, color_hexes = _colours(variant)
 
     return {
         "id": f"{ID_PREFIX}{size['uuid']}",
@@ -142,9 +167,9 @@ def build_filament(
         "spool_weight": float(empty_spool_weight) if empty_spool_weight else None,
         "spool_type": None,
         "diameter": float(size["diameter"]),
-        "color_hex": norm_hex(variant.get("color_hex")),
-        "color_hexes": None,
-        "multi_color_direction": None,
+        "color_hex": color_hex,
+        "color_hexes": color_hexes,
+        "multi_color_direction": _multi_color_direction(traits) if color_hexes else None,
         "extruder_temp": pick_temp(
             filament.get("min_print_temperature"), filament.get("max_print_temperature")
         ),
